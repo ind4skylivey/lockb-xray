@@ -228,3 +228,18 @@ cargo test
 - **Parser fidelity** — The binary layout (header, columnar tables, buffers, trailers) follows Bun’s implementation and published lockfile documentation; there is no speculative guessing.
 - **Semantics** — Workspaces, trusted dependencies, overrides, patches, and catalogs are interpreted according to Bun’s package manager behavior, including newer trailers like trusted deps and workspace metadata.
 - **Forward path** — As Bun moves toward a text lockfile, `lockb-xray` aims to remain a faithful, independent implementation of the legacy binary format for long-lived projects, audits, and post-incident forensics.
+
+---
+
+## Security / threat model (short)
+- Designed to parse **potentially malicious lockfiles**: validates offsets, bounds, and IDs to avoid panics.
+- **Local & offline**: does not fetch network resources or execute scripts; purely reads `bun.lockb` and optional `package.json`.
+- Focused on **visibility** (findings + severities); enforcement/mitigation is up to your CI/policy engine.
+
+---
+
+## Roadmap & issues
+- Roadmap / contribution ideas live in the issue tracker. Tagged items:
+  - [roadmap] expand rules (registry policy, SBOM export)
+  - [good first issue] add more fixtures for overrides/patches/catalogs
+  - [appsec] additional heuristics for suspicious git/tarball sources
