@@ -20,7 +20,7 @@ comfy-table = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 camino = { workspace = true }
-bun-xray-core = { path = "../bun-xray-core" }
+bun-xray-core = { path = "../bun-xray-core", version = "0.1.0" }
 binrw = { workspace = true }
 
 [[bin]]
