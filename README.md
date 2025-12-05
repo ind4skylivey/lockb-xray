@@ -1,5 +1,9 @@
 # lockb-xray · 🔎🛡️
 
+<p align="center">
+  <img src="docs/assets/banner.png" alt="lockb-xray banner" width="90%" />
+</p>
+
 *For when `bun.lockb` looks clean in Git, but your gut says “something’s off.”*
 
 [![crates.io](https://img.shields.io/crates/v/lockb-xray?color=4caf50&logo=rust)](https://crates.io/crates/lockb-xray)
