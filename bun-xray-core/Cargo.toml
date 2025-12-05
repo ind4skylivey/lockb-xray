@@ -15,6 +15,7 @@ serde_json = { workspace = true }
 camino = { workspace = true }
 bitflags = { workspace = true, features = ["serde"] }
 base64 = { workspace = true }
+tempfile = "3"
 
 [dev-dependencies]
 pretty_assertions = "1"

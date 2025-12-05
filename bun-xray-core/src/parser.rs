@@ -496,11 +496,13 @@ fn parse_buffers(bytes: &[u8], start: usize) -> Result<BuffersParseResult, Parse
         }
     }
 
+    let ptr_block_end = cursor.position() as usize;
+
     Ok(BuffersParseResult {
         dependencies: deps,
         resolutions: res,
         string_bytes,
-        end_pos: max_end,
+        end_pos: max_end.max(ptr_block_end),
     })
 }
 
