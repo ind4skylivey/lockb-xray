@@ -1,13 +1,16 @@
-# lockb-xray
+# lockb-xray · 🔎🛡️
 
-> Zero-trust auditor for Bun’s binary lockfile (`bun.lockb`). Supply-chain visibility, CI-friendly exits, and stable JSON reports.
+Zero-trust auditor for Bun’s binary lockfile (`bun.lockb`). Supply-chain visibility, CI-friendly exits, and stable JSON reports.
 
-![status](https://img.shields.io/badge/status-stable-brightgreen) ![crates.io](https://img.shields.io/crates/v/lockb-xray) ![license](https://img.shields.io/badge/license-MIT-blue)
+[![crates.io](https://img.shields.io/crates/v/lockb-xray?color=4caf50&logo=rust)](https://crates.io/crates/lockb-xray)
+[![docs](https://img.shields.io/badge/docs-usage-blueviolet)](USAGE.md)
+[![schema](https://img.shields.io/badge/json-schema-teal)](SCHEMA.md)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 ## Why use it
-- **Bun’s lockfile is binary**: invisible to git diffs, easy to smuggle phantom deps or shady registries.
-- **Deep parse, no guesses**: `binrw` parser for resolutions (npm/git/github/tarball/workspace), SRI integrity, and trailers (trusted deps, overrides, patched deps, catalogs).
-- **Built for CI**: deterministic exit codes, severity thresholds, clean JSON, and knobs to whitelist/ignore registries and packages.
+- **Bun’s lockfile is binary** → invisible to git diffs; ripe for phantom deps & registry swaps.
+- **Deterministic parser** → `binrw` structs for resolutions, integrity, trailers (overrides, patches, trusted deps, catalogs).
+- **CI-native** → severity thresholds, clean JSON, exit codes 0/1/2, allow/ignore knobs for registries and packages.
 
 ## Install
 ```bash
@@ -94,10 +97,10 @@ audit:
 - `examples/tampered-registry/bun.lockb` — malicious registry (`evil.com`) to trigger warnings.
 
 ## Features
-- Binary, zero-copy parser with `binrw`.
-- Resolutions: npm/git/github/tarball/workspace; SRI integrity decoding.
-- Trailers: trusted deps, overrides, patched deps, catalogs, workspaces.
-- Fuzz/property tests to guard against crashes on corrupt lockfiles.
+✔️ Binary, zero-copy parser (`binrw`)  
+✔️ Resolutions: npm/git/github/tarball/workspace + SRI integrity  
+✔️ Trailers: trusted deps, overrides, patched deps, catalogs, workspaces  
+✔️ Fuzz/property tests to guard against corrupt lockfiles  
 
 ## Development
 ```bash
