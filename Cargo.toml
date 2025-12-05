@@ -8,6 +8,7 @@ edition = "2021"
 license = "MIT"
 repository = "https://example.com/ind4skylivey/lockb-xray"
 keywords = ["security", "bun", "lockfile", "forensics"]
+categories = ["command-line-utilities", "development-tools", "security"]
 
 [workspace.dependencies]
 anyhow = "1"

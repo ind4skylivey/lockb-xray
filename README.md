@@ -49,6 +49,30 @@ JSON mode:
 lockb-xray audit ./bun.lockb --json
 ```
 
+Verbose + trailers:
+
+```bash
+lockb-xray audit ./bun.lockb --verbose --severity-threshold warn --allow-registry npmjs.org
+```
+
+CI integration (GitHub Actions):
+
+```yaml
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install --path lockb-xray-cli
+      - run: lockb-xray audit ./bun.lockb --json --severity-threshold warn > lockb-report.json
+```
+
+## Examples
+
+`examples/minimal/bun.lockb` — lockfile sano mínimo.  
+`examples/tampered-registry/bun.lockb` — lockfile con registry alterado (`evil.com`) para pruebas de alerta.
+
 ## Development
 
 ```bash

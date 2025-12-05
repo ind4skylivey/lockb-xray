@@ -7,6 +7,8 @@ use bun_xray_core::{
 use clap::{Parser, Subcommand};
 use colored::*;
 use comfy_table::{presets::UTF8_FULL, Cell, ContentArrangement, Table};
+use serde::Serialize;
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -28,10 +30,84 @@ enum Commands {
         /// Verbose parser diagnostics
         #[arg(long)]
         verbose: bool,
+        /// Minimum severity that triggers non-zero exit (info|warn|high)
+        #[arg(long, default_value = "warn")]
+        severity_threshold: String,
+        /// Allow registries (host substring). If set, only these are considered trusted.
+        #[arg(long = "allow-registry")]
+        allow_registry: Vec<String>,
+        /// Ignore registries (host substring). Skip warnings for these registries.
+        #[arg(long = "ignore-registry")]
+        ignore_registry: Vec<String>,
+        /// Ignore specific package names (exact match).
+        #[arg(long = "ignore-package")]
+        ignore_package: Vec<String>,
         /// Optional package.json path (defaults to sibling of lockfile)
         #[arg(long = "package-json", value_name = "PATH")]
         package_json: Option<PathBuf>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Severity {
+    Info = 0,
+    Warn = 1,
+    High = 2,
+}
+
+impl Severity {
+    fn color(&self) -> comfy_table::Color {
+        match self {
+            Severity::Info => comfy_table::Color::Green,
+            Severity::Warn => comfy_table::Color::Yellow,
+            Severity::High => comfy_table::Color::Red,
+        }
+    }
+    fn from_str(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "info" => Some(Severity::Info),
+            "warn" | "warning" => Some(Severity::Warn),
+            "high" | "critical" => Some(Severity::High),
+            _ => None,
+        }
+    }
+    fn as_str(&self) -> &'static str {
+        match self {
+            Severity::Info => "info",
+            Severity::Warn => "warn",
+            Severity::High => "high",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct Issue {
+    id: usize,
+    severity: Severity,
+    kind: String,
+    package: String,
+    version: String,
+    detail: String,
+}
+
+#[derive(Debug, Serialize)]
+struct Summary {
+    total_packages: usize,
+    issues_total: usize,
+    high_count: usize,
+    warn_count: usize,
+    info_count: usize,
+    exit_code: i32,
+    parser_warnings: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct JsonReport<'a> {
+    summary: &'a Summary,
+    issues: &'a [Issue],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trailers: Option<&'a bun_xray_core::model::TrailerInfo>,
 }
 
 fn main() -> Result<()> {
@@ -41,66 +117,201 @@ fn main() -> Result<()> {
             path,
             json,
             verbose,
+            severity_threshold,
+            allow_registry,
+            ignore_registry,
+            ignore_package,
             package_json,
-        } => run_audit(path, json, verbose, package_json)?,
+        } => run_audit(
+            path,
+            json,
+            verbose,
+            &severity_threshold,
+            allow_registry,
+            ignore_registry,
+            ignore_package,
+            package_json,
+        )?,
     }
     Ok(())
 }
 
-fn run_audit(path: PathBuf, json: bool, verbose: bool, package_json: Option<PathBuf>) -> Result<()> {
-    let lockfile_path = path.clone();
-    let (lockfile, warnings) =
-        parse_lockfile_with_warnings(lockfile_path.as_path()).map_err(map_binrw_error)?;
+fn run_audit(
+    path: PathBuf,
+    json: bool,
+    verbose: bool,
+    severity_threshold: &str,
+    allow_registry: Vec<String>,
+    ignore_registry: Vec<String>,
+    ignore_package: Vec<String>,
+    package_json: Option<PathBuf>,
+) -> Result<()> {
+    let (lockfile, parser_warnings) =
+        parse_lockfile_with_warnings(path.as_path()).map_err(map_binrw_error)?;
 
-    let package_json = resolve_package_json(&lockfile_path, package_json)?;
+    let package_json = resolve_package_json(&path, package_json)?;
     let scan = lockfile.scan(package_json.as_ref());
 
-    if verbose {
-        for w in warnings {
-            eprintln!("[warn] {}", w);
-        }
-        if lockfile.trailers.has_empty_trusted {
-            eprintln!("[info] trustedDependencies present but empty");
-        }
-        if !lockfile.trailers.trusted_hashes.is_empty() {
+    let issues = collect_issues(
+        &scan,
+        &lockfile,
+        parser_warnings,
+        &allow_registry,
+        &ignore_registry,
+        &ignore_package,
+    );
+
+    let sev_threshold = Severity::from_str(severity_threshold).unwrap_or(Severity::Warn);
+    let exit_code = decide_exit_code(&issues, sev_threshold);
+
+    let summary = Summary {
+        total_packages: scan.total_packages,
+        issues_total: issues.len(),
+        high_count: issues.iter().filter(|i| i.severity == Severity::High).count(),
+        warn_count: issues.iter().filter(|i| i.severity == Severity::Warn).count(),
+        info_count: issues.iter().filter(|i| i.severity == Severity::Info).count(),
+        exit_code,
+        parser_warnings: issues
+            .iter()
+            .filter(|i| i.kind == "parser_warning")
+            .map(|i| i.detail.clone())
+            .collect(),
+    };
+
+    if json {
+        let report = JsonReport {
+            summary: &summary,
+            issues: &issues,
+            trailers: if verbose { Some(&lockfile.trailers) } else { None },
+        };
+        let output = serde_json::to_string_pretty(&report)?;
+        println!("{}", output);
+    } else {
+        if verbose {
+            for w in &summary.parser_warnings {
+                eprintln!("[warn] {}", w);
+            }
             eprintln!(
-                "[info] trustedDependencies count={}",
-                lockfile.trailers.trusted_hashes.len()
-            );
-        }
-        if !lockfile.trailers.overrides.is_empty() {
-            eprintln!("[info] overrides entries={}", lockfile.trailers.overrides.len());
-        }
-        if !lockfile.trailers.patched.is_empty() {
-            eprintln!(
-                "[info] patched dependencies={}",
-                lockfile.trailers.patched.len()
-            );
-        }
-        if !lockfile.trailers.catalogs.is_empty() {
-            eprintln!(
-                "[info] catalogs groups={}, default deps={}",
+                "[info] trailers: trusted={} overrides={} patched={} catalogs={} workspaces={}",
+                lockfile.trailers.trusted_hashes.len(),
+                lockfile.trailers.overrides.len(),
+                lockfile.trailers.patched.len(),
                 lockfile.trailers.catalogs.len(),
-                lockfile.trailers.default_catalog.len()
-            );
-        }
-        if lockfile.trailers.workspaces_count > 0 {
-            eprintln!(
-                "[info] workspace packages={}",
                 lockfile.trailers.workspaces_count
             );
         }
+        render_summary(&summary);
+        render_tables(&issues);
     }
 
-    if json {
-        let output = serde_json::to_string_pretty(&scan)?;
-        println!("{}", output);
-        return Ok(());
+    std::process::exit(exit_code);
+}
+
+fn collect_issues(
+    scan: &ScanResult,
+    lockfile: &bun_xray_core::Lockfile,
+    parser_warnings: Vec<String>,
+    allow_registry: &[String],
+    ignore_registry: &[String],
+    ignore_package: &[String],
+) -> Vec<Issue> {
+    let mut issues = Vec::new();
+    let mut id = 1usize;
+    let ignore_pkg: HashSet<String> = ignore_package.iter().cloned().collect();
+
+    let mut push_issue = |severity: Severity, kind: &str, pkg: &bun_xray_core::Package, detail: String| {
+        if ignore_pkg.contains(&pkg.name) {
+            return;
+        }
+        issues.push(Issue {
+            id,
+            severity,
+            kind: kind.to_string(),
+            package: pkg.name.clone(),
+            version: pkg.version.clone(),
+            detail,
+        });
+        id += 1;
+    };
+
+    for pkg in &scan.integrity_mismatches {
+        push_issue(
+            Severity::High,
+            "integrity_mismatch",
+            pkg,
+            pkg.integrity_hash.clone().unwrap_or_default(),
+        );
+    }
+    for pkg in &scan.phantom_dependencies {
+        push_issue(Severity::Warn, "phantom_dependency", pkg, "Not declared in package.json".into());
+    }
+    for pkg in &scan.suspicious_versions {
+        push_issue(Severity::Warn, "suspicious_version", pkg, pkg.version.clone());
+    }
+    for pkg in &scan.untrusted_registries {
+        if registry_allowed(&pkg.registry_url, allow_registry, ignore_registry) {
+            continue;
+        }
+        push_issue(
+            Severity::Warn,
+            "untrusted_registry",
+            pkg,
+            pkg.registry_url.clone(),
+        );
+    }
+    for pkg in &lockfile.packages {
+        if pkg.integrity_hash.is_none() && !ignore_pkg.contains(&pkg.name) {
+            issues.push(Issue {
+                id,
+                severity: Severity::Warn,
+                kind: "missing_integrity".into(),
+                package: pkg.name.clone(),
+                version: pkg.version.clone(),
+                detail: "No integrity hash".into(),
+            });
+            id += 1;
+        }
     }
 
-    render_summary(&scan);
-    render_tables(&scan);
-    Ok(())
+    for w in parser_warnings {
+        issues.push(Issue {
+            id,
+            severity: Severity::Warn,
+            kind: "parser_warning".into(),
+            package: "-".into(),
+            version: "-".into(),
+            detail: w,
+        });
+        id += 1;
+    }
+
+    issues
+}
+
+fn registry_allowed(registry: &str, allow: &[String], ignore: &[String]) -> bool {
+    let host = extract_host(registry).unwrap_or(registry).to_ascii_lowercase();
+    if ignore.iter().any(|r| host.contains(&r.to_ascii_lowercase())) {
+        return true;
+    }
+    if allow.is_empty() {
+        return false;
+    }
+    allow.iter().any(|r| host.contains(&r.to_ascii_lowercase()))
+}
+
+fn decide_exit_code(issues: &[Issue], threshold: Severity) -> i32 {
+    let high = issues.iter().any(|i| i.severity == Severity::High);
+    let warn = issues.iter().any(|i| i.severity == Severity::Warn);
+    let info = issues.iter().any(|i| i.severity == Severity::Info);
+    if high && Severity::High >= threshold {
+        2
+    } else if warn && Severity::Warn >= threshold {
+        1
+    } else if info && Severity::Info >= threshold {
+        1
+    } else {
+        0
+    }
 }
 
 fn resolve_package_json(
@@ -126,109 +337,48 @@ fn resolve_package_json(
     }
 }
 
-fn render_summary(scan: &ScanResult) {
-    println!("{} {} packages parsed", "✅".green(), scan.total_packages);
-
-    if scan.phantom_dependencies.is_empty() {
-        println!("{} No phantom dependencies", "✅".green());
+fn render_summary(sum: &Summary) {
+    println!("{} {} packages parsed", "✅".green(), sum.total_packages);
+    if sum.high_count == 0 && sum.warn_count == 0 && sum.info_count == 0 {
+        println!("{} No findings", "✅".green());
     } else {
         println!(
-            "{} {} phantom dependencies",
-            "🚨".red(),
-            scan.phantom_dependencies.len()
-        );
-    }
-
-    if scan.untrusted_registries.is_empty() {
-        println!("{} All registries trusted", "✅".green());
-    } else {
-        let summary = summarize_registry_counts(&scan.untrusted_registries);
-        println!(
-            "{} {} packages from untrusted registry ({})",
+            "{} Findings: high={}, warn={}, info={}",
             "⚠️".yellow(),
-            scan.untrusted_registries.len(),
-            summary
+            sum.high_count,
+            sum.warn_count,
+            sum.info_count
         );
     }
-
-    if scan.integrity_mismatches.is_empty() {
-        println!("{} Integrity OK", "✅".green());
-    } else {
-        let top = &scan.integrity_mismatches[0];
-        println!(
-            "{} HIGH: {}@{} integrity mismatch",
-            "🚨".red(),
-            top.name,
-            top.version
-        );
-    }
+    println!("Exit code on current threshold: {}", sum.exit_code);
 }
 
-fn render_tables(scan: &ScanResult) {
+fn render_tables(issues: &[Issue]) {
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL)
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(vec![
-            Cell::new("Issue").fg(comfy_table::Color::Blue),
+            Cell::new("Severity").fg(comfy_table::Color::Blue),
             Cell::new("Package").fg(comfy_table::Color::Blue),
             Cell::new("Version").fg(comfy_table::Color::Blue),
-            Cell::new("Registry").fg(comfy_table::Color::Blue),
+            Cell::new("Kind").fg(comfy_table::Color::Blue),
+            Cell::new("Details").fg(comfy_table::Color::Blue),
         ]);
 
-    for pkg in &scan.phantom_dependencies {
+    for issue in issues {
         table.add_row(vec![
-            Cell::new("Phantom").fg(comfy_table::Color::Red),
-            Cell::new(pkg.name.as_str()),
-            Cell::new(pkg.version.as_str()),
-            Cell::new(pkg.registry_url.as_str()),
+            Cell::new(issue.severity.as_str()).fg(issue.severity.color()),
+            Cell::new(issue.package.as_str()),
+            Cell::new(issue.version.as_str()),
+            Cell::new(issue.kind.as_str()),
+            Cell::new(issue.detail.as_str()),
         ]);
     }
 
-    for pkg in &scan.untrusted_registries {
-        table.add_row(vec![
-            Cell::new("Untrusted Registry").fg(comfy_table::Color::Yellow),
-            Cell::new(pkg.name.as_str()),
-            Cell::new(pkg.version.as_str()),
-            Cell::new(pkg.registry_url.as_str()),
-        ]);
-    }
-
-    for pkg in &scan.integrity_mismatches {
-        table.add_row(vec![
-            Cell::new("Integrity Mismatch").fg(comfy_table::Color::Red),
-            Cell::new(pkg.name.as_str()),
-            Cell::new(pkg.version.as_str()),
-            Cell::new(pkg.registry_url.as_str()),
-        ]);
-    }
-
-    for pkg in &scan.suspicious_versions {
-        table.add_row(vec![
-            Cell::new("Suspicious Version").fg(comfy_table::Color::Yellow),
-            Cell::new(pkg.name.as_str()),
-            Cell::new(pkg.version.as_str()),
-            Cell::new(pkg.registry_url.as_str()),
-        ]);
-    }
-
-    if !table.is_empty() {
+    if !issues.is_empty() {
         println!("\n{}", table);
     }
-}
-
-fn summarize_registry_counts(packages: &[bun_xray_core::Package]) -> String {
-    use std::collections::HashMap;
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for pkg in packages {
-        let host = extract_host(&pkg.registry_url).unwrap_or("unknown").to_string();
-        *counts.entry(host).or_insert(0) += 1;
-    }
-    counts
-        .into_iter()
-        .map(|(host, count)| format!("{}: {}", host, count))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 fn extract_host(url: &str) -> Option<&str> {

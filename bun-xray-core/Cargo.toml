@@ -19,3 +19,4 @@ tempfile = "3"
 
 [dev-dependencies]
 pretty_assertions = "1"
+proptest = "1"
