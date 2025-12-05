@@ -1,114 +1,108 @@
-<img width="2835" height="1344" alt="9842413" src="https://github.com/user-attachments/assets/04fb244b-858d-4fc5-a211-e2738d1a4704" />
 # lockb-xray · 🔎🛡️
 
-Zero-trust auditor for Bun’s binary lockfile (`bun.lockb`). Supply-chain visibility, CI-friendly exits, and stable JSON reports.
+*For when `bun.lockb` looks clean in Git, but your gut says “something’s off.”*
 
 [![crates.io](https://img.shields.io/crates/v/lockb-xray?color=4caf50&logo=rust)](https://crates.io/crates/lockb-xray)
 [![docs](https://img.shields.io/badge/docs-usage-blueviolet)](USAGE.md)
 [![schema](https://img.shields.io/badge/json-schema-teal)](SCHEMA.md)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-## Why use it
-- **Bun’s lockfile is binary** → invisible to git diffs; ripe for phantom deps & registry swaps.
-- **Deterministic parser** → `binrw` structs for resolutions, integrity, trailers (overrides, patches, trusted deps, catalogs).
-- **CI-native** → severity thresholds, clean JSON, exit codes 0/1/2, allow/ignore knobs for registries and packages.
-- **Local & read-only** → lockb-xray never crawls the web; it only parses your existing `bun.lockb`.
+`lockb-xray` is a Rust forensic CLI that opens Bun’s binary lockfile (`bun.lockb`) and asks the only supply-chain question that matters: **what is actually going to be installed?** It turns Bun’s opaque, columnar lockfile into a clear, security-focused report for CI, code review, and incident response.
 
-## Highlights
-- 🚨 Integrity + registry checks surfaced with severities.
-- 🧠 Trailer awareness (trusted deps, overrides, patched, catalogs, workspaces).
+## Why use it
+- **Bun’s lockfile is binary** → invisible to git diffs; perfect for phantom deps and registry swaps.
+- **Deterministic parser** → `binrw` structs for resolutions, integrity, trailers (trusted deps, overrides, patches, catalogs).
+- **CI-native** → severity thresholds, clean JSON, exit codes 0/1/2, allow/ignore knobs.
+- **Local & read-only** → never crawls the web; only parses your existing `bun.lockb`.
+
+## Features at a glance
+- 🔍 Binary lockfile introspection (columnar tables, shared buffers, trailers).
+- 🧠 Supply-chain checks: phantom deps, untrusted registries, suspicious git/file/tarball resolutions, integrity gaps.
 - 🧪 Fuzz/property tests to guard against corrupt lockfiles.
-- 🛠️ CI drop-in: JSON contract + exit codes.
+- 🛠️ Workspace-aware: understands Bun trailers (trusted deps, overrides, patches, catalogs, workspaces).
+- 🖥️ CI-ready: colorful human output + stable JSON contract and deterministic exit codes.
 
 ## Install
 ```bash
 cargo install lockb-xray
 ```
 
-## Quickstart
+## Quick start
 ```bash
+# Simple run
 lockb-xray audit ./bun.lockb
+
+# Explicit manifest (monorepo / non-standard layout)
+lockb-xray audit ./bun.lockb --package-json ./package.json
+
+# Verbose: include trailers and parser warnings
+lockb-xray audit ./bun.lockb --verbose
 ```
-Sample:
+
+Example (verbose):
 ```
 ✅ 1,247 packages parsed
-⚠️ Findings: high=1, warn=3, info=0
-🚨 high express@4.18.2 integrity_mismatch sha512-...
-⚠️ warn lodash@4.17.21 untrusted_registry cdn.jsdelivr.net
+✅ No phantom dependencies
+⚠️  3 packages from untrusted registry (jsdelivr)
+⚠️  2 overrides modify resolution URLs
+🚨 HIGH: express@4.18.2 integrity mismatch
 ```
 
-## CLI essentials
-- `--json`                       → JSON only (quiet)
-- `--verbose`                   → add parser warnings + trailers to output
-- `--severity-threshold <lvl>`  → info|warn|high controls exit code
-- `--allow-registry <host>`     → corporate allowlist
-- `--ignore-registry <host>`    → silence specific hosts
-- `--ignore-package <name>`     → suppress known false positives
+## Exit codes & CI
+- `0` – No issues at/above threshold.
+- `1` – Warnings/info (threshold met).
+- `2` – At least one HIGH finding (integrity mismatch, malicious registry, etc.).
 
-Exit codes:
-- `0` no findings at/above threshold
-- `1` warnings/info (threshold met)
-- `2` high/critical (threshold met)
+GitHub Actions (minimal):
+```yaml
+- name: Audit Bun lockfile
+  run: |
+    lockb-xray audit ./bun.lockb --json --severity-threshold warn > lockb-report.json
+```
+Use the JSON for policy, or rely on exit codes.
 
-## Stable JSON contract
-```jsonc
-{
-  "summary": {
-    "total_packages": 1247,
-    "issues_total": 4,
-    "high_count": 1,
-    "warn_count": 3,
-    "info_count": 0,
-    "exit_code": 2,
-    "parser_warnings": []
-  },
-  "issues": [
-    {
-      "id": 1,
-      "severity": "high",
-      "kind": "integrity_mismatch",
-      "package": "express",
-      "version": "4.18.2",
-      "detail": "sha512-..."
-    }
-  ],
-  "trailers": { /* present only with --verbose */ }
+## JSON contract (stable)
+See **SCHEMA.md** for full details. Shape (TypeScript):
+```ts
+interface Summary {
+  total_packages: number;
+  issues_total: number;
+  high_count: number;
+  warn_count: number;
+  info_count: number;
+  exit_code: number;
+  parser_warnings: string[];
 }
+
+interface Issue {
+  id: number;
+  severity: "info" | "warn" | "high";
+  kind: string;
+  package: string;
+  version: string;
+  detail: string;
+}
+
+interface Report { summary: Summary; issues: Issue[]; trailers?: any; }
 ```
 
-## CI snippets
-### GitHub Actions
-```yaml
-jobs:
-  audit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install lockb-xray
-      - run: lockb-xray audit ./bun.lockb --json --severity-threshold warn > lockb-report.json
-```
+## What lockb-xray inspects
+- Packages: name, version, registry/URL.
+- Resolutions: npm/git/github/tarball/workspace (owner/repo/commit for git).
+- Integrity: SRI-like strings or unknown.
+- Behavior flags: prod/dev/optional/peer/workspace bitfield.
+- Trailers: workspaces, trusted deps, overrides, patched deps, catalogs.
 
-### GitLab CI
-```yaml
-audit:
-  image: rust:latest
-  script:
-    - cargo install lockb-xray
-    - lockb-xray audit ./bun.lockb --json --severity-threshold warn > lockb-report.json
-  artifacts:
-    paths: [lockb-report.json]
-```
+Findings include:
+- “Package X only exists in bun.lockb, not in package.json (phantom dep).”
+- “Dependency Y resolves from untrusted registry Z.”
+- “Patched dependency modifies its resolved URL away from the canonical registry.”
+- “Lockfile format version is newer than supported; refuse to trust it.”
 
-## Examples
-- `examples/minimal/bun.lockb` — clean baseline.
-- `examples/tampered-registry/bun.lockb` — malicious registry (`evil.com`) to trigger warnings.
-
-## Features
-✔️ Binary, zero-copy parser (`binrw`)  
-✔️ Resolutions: npm/git/github/tarball/workspace + SRI integrity  
-✔️ Trailers: trusted deps, overrides, patched deps, catalogs, workspaces  
-✔️ Fuzz/property tests to guard against corrupt lockfiles  
+## When to run it
+- Before merging any PR that changes `bun.lockb`.
+- As a mandatory CI step for Bun services and monorepos.
+- During incident response when a dependency, override, or patch looks suspicious.
 
 ## Lockfile layout (mental map)
 ```
@@ -121,6 +115,13 @@ sentinel (0)
 trailers: trusted / overrides / patched / catalogs / workspaces / config_version
 ```
 
+## Examples
+- `examples/minimal/bun.lockb` — clean baseline.
+- `examples/tampered-registry/bun.lockb` — malicious registry (`evil.com`) to trigger warnings.
+- `examples/override-malicious/` — override trailer illustration.
+- `examples/patched-dep/` — patched dependency illustration.
+- CI snippets in `examples/ci-github` and `examples/ci-gitlab`.
+
 ## Development
 ```bash
 cargo build --workspace
@@ -128,5 +129,5 @@ cargo test
 ```
 
 ## Limitations / Notes
-- Future Bun lockfile versions may require parser adjustments.
-- Mitigation policies (e.g., blocking registries) are left to your CI/CD or policy engine; we surface findings with clear severities.
+- Future Bun lockfile versions may need parser tweaks.
+- Mitigation/enforcement is up to your policy layer; lockb-xray reports with severities and exit codes.
