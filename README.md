@@ -12,6 +12,13 @@ Zero-trust auditor for Bun’s binary lockfile (`bun.lockb`). Supply-chain visib
 - **Bun’s lockfile is binary** → invisible to git diffs; ripe for phantom deps & registry swaps.
 - **Deterministic parser** → `binrw` structs for resolutions, integrity, trailers (overrides, patches, trusted deps, catalogs).
 - **CI-native** → severity thresholds, clean JSON, exit codes 0/1/2, allow/ignore knobs for registries and packages.
+- **Local & read-only** → lockb-xray never crawls the web; it only parses your existing `bun.lockb`.
+
+## Highlights
+- 🚨 Integrity + registry checks surfaced with severities.
+- 🧠 Trailer awareness (trusted deps, overrides, patched, catalogs, workspaces).
+- 🧪 Fuzz/property tests to guard against corrupt lockfiles.
+- 🛠️ CI drop-in: JSON contract + exit codes.
 
 ## Install
 ```bash
@@ -102,6 +109,17 @@ audit:
 ✔️ Resolutions: npm/git/github/tarball/workspace + SRI integrity  
 ✔️ Trailers: trusted deps, overrides, patched deps, catalogs, workspaces  
 ✔️ Fuzz/property tests to guard against corrupt lockfiles  
+
+## Lockfile layout (mental map)
+```
+magic + format + meta_hash
+package table:
+  [names][name_hashes][resolutions][dep_slices][res_slices][meta][bin][scripts?]
+buffers:
+  dependencies | resolutions | string_bytes | ...
+sentinel (0)
+trailers: trusted / overrides / patched / catalogs / workspaces / config_version
+```
 
 ## Development
 ```bash
