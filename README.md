@@ -131,3 +131,8 @@ cargo test
 ## Limitations / Notes
 - Future Bun lockfile versions may need parser tweaks.
 - Mitigation/enforcement is up to your policy layer; lockb-xray reports with severities and exit codes.
+
+## Design notes
+- Parser fidelity: the binary layout (header, columnar tables, buffers, trailers) follows Bun’s own implementation and public docs; no guessing.
+- Semantics: workspaces, trusted dependencies, overrides, patches, and catalogs are interpreted per Bun’s package manager behavior (including newer trailers).
+- Forward path: as Bun moves toward text lockfiles, lockb-xray remains a faithful, independent implementation of the legacy binary format for audits and forensics.
