@@ -1,4 +1,5 @@
 use bun_xray_core::parser::parse_lockfile;
+use bun_xray_core::parser::parse_lockfile_with_warnings;
 use std::io::Write;
 use tempfile::NamedTempFile;
 
@@ -132,4 +133,32 @@ fn parse_min_lockb() {
     assert_eq!(pkg.version, "1.0.0");
     assert_eq!(pkg.registry_url, "npm");
     assert!(pkg.integrity_hash.is_some());
+}
+
+#[test]
+fn parse_bad_magic_fails() {
+    let mut data = build_min_lockb();
+    data[0] = b'#' ^ 0xFF; // corrupt
+    let mut tmp = NamedTempFile::new().unwrap();
+    tmp.write_all(&data).unwrap();
+    let err = parse_lockfile(tmp.path()).unwrap_err();
+    assert!(format!("{err}").contains("invalid lockfile magic"));
+}
+
+#[test]
+fn parse_with_trailers_empty_counts() {
+    let mut data = build_min_lockb();
+    // append a trusted empty tag after existing sentinel
+    let tag = u64::from_le_bytes(*b"eMpTrUsT");
+    data.extend_from_slice(&tag.to_le_bytes());
+    data.extend_from_slice(&0u64.to_le_bytes()); // new sentinel
+    // update total_size
+    let total_size = data.len() as u64;
+    let total_pos = 42 + 4 + 32;
+    data[total_pos..total_pos + 8].copy_from_slice(&total_size.to_le_bytes());
+    let mut tmp = NamedTempFile::new().unwrap();
+    tmp.write_all(&data).unwrap();
+    let (lock, warnings) = parse_lockfile_with_warnings(tmp.path()).expect("parse trailers");
+    assert!(lock.trailers.has_empty_trusted);
+    assert!(warnings.is_empty());
 }

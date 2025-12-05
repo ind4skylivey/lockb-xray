@@ -68,20 +68,21 @@ fn run_audit(path: PathBuf, json: bool, verbose: bool, package_json: Option<Path
                 lockfile.trailers.trusted_hashes.len()
             );
         }
-        if lockfile.trailers.overrides_count > 0 {
-            eprintln!(
-                "[info] overrides entries={}",
-                lockfile.trailers.overrides_count
-            );
+        if !lockfile.trailers.overrides.is_empty() {
+            eprintln!("[info] overrides entries={}", lockfile.trailers.overrides.len());
         }
-        if lockfile.trailers.patched_count > 0 {
+        if !lockfile.trailers.patched.is_empty() {
             eprintln!(
                 "[info] patched dependencies={}",
-                lockfile.trailers.patched_count
+                lockfile.trailers.patched.len()
             );
         }
-        if lockfile.trailers.catalogs_count > 0 {
-            eprintln!("[info] catalogs groups={}", lockfile.trailers.catalogs_count);
+        if !lockfile.trailers.catalogs.is_empty() {
+            eprintln!(
+                "[info] catalogs groups={}, default deps={}",
+                lockfile.trailers.catalogs.len(),
+                lockfile.trailers.default_catalog.len()
+            );
         }
         if lockfile.trailers.workspaces_count > 0 {
             eprintln!(

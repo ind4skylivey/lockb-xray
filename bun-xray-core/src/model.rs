@@ -58,8 +58,28 @@ pub struct Lockfile {
 pub struct TrailerInfo {
     pub trusted_hashes: Vec<u32>,
     pub has_empty_trusted: bool,
-    pub overrides_count: usize,
-    pub patched_count: usize,
-    pub catalogs_count: usize,
+    pub overrides: Vec<OverrideEntry>,
+    pub patched: Vec<PatchedEntry>,
+    pub catalogs: Vec<CatalogGroup>,
+    pub default_catalog: Vec<DependencyEntry>,
     pub workspaces_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverrideEntry {
+    pub name_hash: u64,
+    pub dependency: DependencyEntry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchedEntry {
+    pub name_version_hash: u64,
+    pub path: String,
+    pub patch_hash: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogGroup {
+    pub name: String,
+    pub dependencies: Vec<DependencyEntry>,
 }

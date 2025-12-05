@@ -1,5 +1,6 @@
 use crate::model::{
-    BehaviorFlags, DependencyEntry, Lockfile, Package, ResolutionKind, TrailerInfo,
+    BehaviorFlags, CatalogGroup, DependencyEntry, Lockfile, OverrideEntry, Package, PatchedEntry,
+    ResolutionKind, TrailerInfo,
 };
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine};
 use binrw::{binrw, BinRead, BinReaderExt};
@@ -262,6 +263,16 @@ struct DependencyExternal {
     version_literal: SemverString,
 }
 
+#[binrw]
+#[brw(little)]
+#[derive(Debug, Clone, Copy)]
+struct PatchedDepExternal {
+    path: SemverString,
+    _padding: [u8; 7],
+    patchfile_hash_is_null: u8,
+    patch_hash: u64,
+}
+
 const BUFFER_KINDS: &[BufferKind] = &[
     BufferKind::Dependencies,
     BufferKind::ExternStrings,
@@ -363,7 +374,12 @@ pub fn parse_lockfile_with_warnings(path: &Path) -> Result<(Lockfile, Vec<String
 
     // Trailers: best-effort skip
     let mut warnings = Vec::new();
-    let trailers = parse_trailers(&mut tail_cursor, total_size, &mut warnings)?;
+    let trailers = parse_trailers(
+        &mut tail_cursor,
+        total_size,
+        parsed_buffers.string_bytes.as_slice(),
+        &mut warnings,
+    )?;
 
     // Build packages
     let string_bytes = parsed_buffers.string_bytes.as_slice();
@@ -406,6 +422,8 @@ pub fn parse_lockfile_with_warnings(path: &Path) -> Result<(Lockfile, Vec<String
             &dependencies,
             &resolutions_buf,
             string_bytes,
+            pkg_header.len as usize,
+            &mut warnings,
         )?;
 
         packages.push(Package {
@@ -574,8 +592,16 @@ fn gather_dependencies(
     deps_buf: &[DependencyExternal],
     res_buf: &[u32],
     strings: &[u8],
+    package_count: usize,
+    warnings: &mut Vec<String>,
 ) -> Result<Vec<DependencyEntry>, ParseError> {
     if dep_slice.off as usize + dep_slice.len as usize > deps_buf.len() {
+        warnings.push(format!(
+            "dependency slice out of bounds off={} len={} buf_len={}",
+            dep_slice.off,
+            dep_slice.len,
+            deps_buf.len()
+        ));
         return Ok(vec![]);
     }
     let deps = &deps_buf[dep_slice.off as usize..dep_slice.off as usize + dep_slice.len as usize];
@@ -583,28 +609,63 @@ fn gather_dependencies(
     let resolved_ids = if res_slice.off as usize + res_slice.len as usize <= res_buf.len() {
         Some(&res_buf[res_slice.off as usize..res_slice.off as usize + res_slice.len as usize])
     } else {
+        warnings.push(format!(
+            "resolution slice out of bounds off={} len={} buf_len={}",
+            res_slice.off,
+            res_slice.len,
+            res_buf.len()
+        ));
         None
     };
 
     let mut out = Vec::with_capacity(deps.len());
     for (i, d) in deps.iter().enumerate() {
-        let name = d.name.decode(strings)?;
-        let req = d.version_literal.decode(strings)?;
-        let behavior = BehaviorFlags::from_bits_truncate(d.behavior);
-        let resolved_package_id = resolved_ids.and_then(|ids| ids.get(i)).copied();
-        out.push(DependencyEntry {
-            name,
-            req,
-            behavior,
-            resolved_package_id,
-        });
+        let dep = decode_dep_external(d, resolved_ids.and_then(|ids| ids.get(i)).copied(), strings)?
+            .with_package_guard(package_count, warnings);
+        out.push(dep);
     }
     Ok(out)
+}
+
+fn decode_dep_external(
+    d: &DependencyExternal,
+    resolved_id: Option<u32>,
+    strings: &[u8],
+) -> Result<DependencyEntry, ParseError> {
+    let name = d.name.decode(strings)?;
+    let req = d.version_literal.decode(strings)?;
+    let behavior = BehaviorFlags::from_bits_truncate(d.behavior);
+    Ok(DependencyEntry {
+        name,
+        req,
+        behavior,
+        resolved_package_id: resolved_id,
+    })
+}
+
+trait GuardPackage {
+    fn with_package_guard(self, package_count: usize, warnings: &mut Vec<String>) -> Self;
+}
+
+impl GuardPackage for DependencyEntry {
+    fn with_package_guard(mut self, package_count: usize, warnings: &mut Vec<String>) -> Self {
+        if let Some(id) = self.resolved_package_id {
+            if id as usize >= package_count {
+                warnings.push(format!(
+                    "resolved package id {} out of range (package_count={})",
+                    id, package_count
+                ));
+                self.resolved_package_id = None;
+            }
+        }
+        self
+    }
 }
 
 fn parse_trailers(
     cursor: &mut Cursor<&[u8]>,
     total_size: u64,
+    strings: &[u8],
     warnings: &mut Vec<String>,
 ) -> Result<TrailerInfo, ParseError> {
     let mut info = TrailerInfo::default();
@@ -617,10 +678,10 @@ fn parse_trailers(
         match tag {
             // known tags; skip their payloads using readArray semantics
             t if t == u64::from_le_bytes(*b"wOrKsPaC") => {
-                let ws_names = read_array_bytes(cursor)?;
-                let ws_versions = read_array_bytes(cursor)?;
-                let ws_paths = read_array_bytes(cursor)?;
-                let ws_paths_strings = read_array_bytes(cursor)?;
+                let ws_names = read_array_bytes(cursor, strings)?;
+                let ws_versions = read_array_bytes(cursor, strings)?;
+                let ws_paths = read_array_bytes(cursor, strings)?;
+                let ws_paths_strings = read_array_bytes(cursor, strings)?;
                 info.workspaces_count = ws_names as usize;
                 warnings.push(format!(
                     "workspace trailer: names={}, versions={}, paths={}, path_strings={}",
@@ -635,26 +696,48 @@ fn parse_trailers(
                 info.has_empty_trusted = true;
             }
             t if t == u64::from_le_bytes(*b"oVeRriDs") => {
-                let names = read_array_bytes(cursor)?;
-                let deps = read_array_bytes(cursor)?;
-                info.overrides_count = deps as usize;
-                warnings.push(format!("overrides trailer: names={}, deps={}", names, deps));
+                let name_hashes = read_array_u64(cursor)?;
+                let overrides_deps = read_array_dep(cursor, strings)?;
+                let mut entries = Vec::new();
+                for (h, d) in name_hashes.into_iter().zip(overrides_deps.into_iter()) {
+                    entries.push(OverrideEntry {
+                        name_hash: h,
+                        dependency: d,
+                    });
+                }
+                info.overrides = entries;
             }
             t if t == u64::from_le_bytes(*b"pAtChEdD") => {
-                let names = read_array_bytes(cursor)?;
-                let patches = read_array_bytes(cursor)?;
-                info.patched_count = patches as usize;
-                warnings.push(format!("patched trailer: entries={} ({})", patches, names));
+                let name_version_hashes = read_array_u64(cursor)?;
+                let patched = read_array_patched(cursor, strings)?;
+                let mut entries = Vec::new();
+                for (h, p) in name_version_hashes.into_iter().zip(patched.into_iter()) {
+                    entries.push(PatchedEntry {
+                        name_version_hash: h,
+                        path: p.0,
+                        patch_hash: p.1,
+                    });
+                }
+                info.patched = entries;
             }
             t if t == u64::from_le_bytes(*b"cAtAlOgS") => {
-                let def_names = read_array_bytes(cursor)?;
-                let def_deps = read_array_bytes(cursor)?;
-                let catalogs = read_array_bytes(cursor)?;
-                info.catalogs_count = catalogs as usize;
-                warnings.push(format!(
-                    "catalogs trailer: default_names={}, default_deps={}, groups={}",
-                    def_names, def_deps, catalogs
-                ));
+                let _default_names = read_array_strings(cursor, strings)?;
+                let default_deps = read_array_dep(cursor, strings)?;
+                info.default_catalog = default_deps;
+
+                let catalog_names = read_array_strings(cursor, strings)?;
+                let mut groups = Vec::new();
+                for name in catalog_names {
+                    let dep_names = read_array_strings(cursor, strings)?;
+                    let dep_values = read_array_dep(cursor, strings)?;
+                    let deps = dep_names
+                        .into_iter()
+                        .zip(dep_values.into_iter())
+                        .map(|(_n, d)| d)
+                        .collect();
+                    groups.push(CatalogGroup { name, dependencies: deps });
+                }
+                info.catalogs = groups;
             }
             t if t == u64::from_le_bytes(*b"cNfGvRsN") => {
                 // config version u64
@@ -679,7 +762,7 @@ fn read_array_range(cursor: &mut Cursor<&[u8]>) -> Result<(u64, u64), ParseError
     Ok((start, end))
 }
 
-fn read_array_bytes(cursor: &mut Cursor<&[u8]>) -> Result<u64, ParseError> {
+fn read_array_bytes(cursor: &mut Cursor<&[u8]>, _strings: &[u8]) -> Result<u64, ParseError> {
     let (start, end) = read_array_range(cursor)?;
     cursor.seek(SeekFrom::Start(end))?;
     Ok((end - start) as u64)
@@ -699,6 +782,90 @@ fn read_array_u32(cursor: &mut Cursor<&[u8]>) -> Result<Vec<u32>, ParseError> {
     let mut out = Vec::new();
     while (cur.position() as usize) < data.len() {
         out.push(cur.read_le::<u32>()?);
+    }
+    Ok(out)
+}
+
+fn read_array_u64(cursor: &mut Cursor<&[u8]>) -> Result<Vec<u64>, ParseError> {
+    let (start, end) = read_array_range(cursor)?;
+    if end == start {
+        return Ok(vec![]);
+    }
+    let len_bytes = (end - start) as usize;
+    cursor.seek(SeekFrom::Start(start))?;
+    let mut data = vec![0u8; len_bytes];
+    cursor.read_exact(&mut data)?;
+    cursor.seek(SeekFrom::Start(end))?;
+    let mut cur = Cursor::new(data.as_slice());
+    let mut out = Vec::new();
+    while (cur.position() as usize) < data.len() {
+        out.push(cur.read_le::<u64>()?);
+    }
+    Ok(out)
+}
+
+fn read_array_strings(cursor: &mut Cursor<&[u8]>, strings: &[u8]) -> Result<Vec<String>, ParseError> {
+    let (start, end) = read_array_range(cursor)?;
+    if end == start {
+        return Ok(vec![]);
+    }
+    let len_bytes = (end - start) as usize;
+    cursor.seek(SeekFrom::Start(start))?;
+    let mut data = vec![0u8; len_bytes];
+    cursor.read_exact(&mut data)?;
+    cursor.seek(SeekFrom::Start(end))?;
+    let mut cur = Cursor::new(data.as_slice());
+    let mut out = Vec::new();
+    while (cur.position() as usize) < data.len() {
+        let s: SemverString = cur.read_le()?;
+        out.push(s.decode(strings)?);
+    }
+    Ok(out)
+}
+
+fn read_array_dep(
+    cursor: &mut Cursor<&[u8]>,
+    strings: &[u8],
+) -> Result<Vec<DependencyEntry>, ParseError> {
+    let (start, end) = read_array_range(cursor)?;
+    if end == start {
+        return Ok(vec![]);
+    }
+    let len_bytes = (end - start) as usize;
+    cursor.seek(SeekFrom::Start(start))?;
+    let mut data = vec![0u8; len_bytes];
+    cursor.read_exact(&mut data)?;
+    cursor.seek(SeekFrom::Start(end))?;
+    let mut cur = Cursor::new(data.as_slice());
+    let mut out = Vec::new();
+    while (cur.position() as usize) < data.len() {
+        let d: DependencyExternal = cur.read_le()?;
+        let dep = decode_dep_external(&d, None, strings)?;
+        out.push(dep);
+    }
+    Ok(out)
+}
+
+fn read_array_patched(
+    cursor: &mut Cursor<&[u8]>,
+    strings: &[u8],
+) -> Result<Vec<(String, Option<u64>)>, ParseError> {
+    let (start, end) = read_array_range(cursor)?;
+    if end == start {
+        return Ok(vec![]);
+    }
+    let len_bytes = (end - start) as usize;
+    cursor.seek(SeekFrom::Start(start))?;
+    let mut data = vec![0u8; len_bytes];
+    cursor.read_exact(&mut data)?;
+    cursor.seek(SeekFrom::Start(end))?;
+    let mut cur = Cursor::new(data.as_slice());
+    let mut out = Vec::new();
+    while (cur.position() as usize) < data.len() {
+        let pd: PatchedDepExternal = cur.read_le()?;
+        let path = pd.path.decode(strings)?;
+        let hash = if pd.patchfile_hash_is_null == 0 { None } else { Some(pd.patch_hash) };
+        out.push((path, hash));
     }
     Ok(out)
 }
