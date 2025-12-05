@@ -5,6 +5,12 @@ edition = "2021"
 authors = ["ind4skylivey"]
 description = "CLI tool to audit Bun bun.lockb for supply chain risks"
 license = "MIT"
+repository = "https://github.com/ind4skylivey/lockb-xray"
+homepage = "https://github.com/ind4skylivey/lockb-xray"
+documentation = "https://github.com/ind4skylivey/lockb-xray"
+readme = "../README.md"
+keywords = ["security", "bun", "lockfile", "supply-chain"]
+categories = ["command-line-utilities", "development-tools", "security"]
 
 [dependencies]
 anyhow = { workspace = true }

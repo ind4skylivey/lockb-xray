@@ -5,6 +5,12 @@ edition = "2021"
 authors = ["ind4skylivey"]
 description = "Core parsing and security scanning logic for bun.lockb forensic analysis"
 license = "MIT"
+repository = "https://github.com/ind4skylivey/lockb-xray"
+homepage = "https://github.com/ind4skylivey/lockb-xray"
+documentation = "https://github.com/ind4skylivey/lockb-xray"
+readme = "../README.md"
+keywords = ["security", "bun", "lockfile", "parser"]
+categories = ["development-tools", "security", "parser-implementations"]
 
 [dependencies]
 binrw = { workspace = true }
