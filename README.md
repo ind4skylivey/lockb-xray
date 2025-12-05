@@ -1,3 +1,4 @@
+<img width="2835" height="1344" alt="9842413" src="https://github.com/user-attachments/assets/04fb244b-858d-4fc5-a211-e2738d1a4704" />
 # lockb-xray · 🔎🛡️
 
 Zero-trust auditor for Bun’s binary lockfile (`bun.lockb`). Supply-chain visibility, CI-friendly exits, and stable JSON reports.
