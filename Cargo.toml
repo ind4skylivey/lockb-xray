@@ -1,0 +1,24 @@
+[workspace]
+members = ["bun-xray-core", "lockb-xray-cli"]
+resolver = "2"
+
+[workspace.package]
+authors = ["ind4skylivey"]
+edition = "2021"
+license = "MIT"
+repository = "https://example.com/ind4skylivey/lockb-xray"
+keywords = ["security", "bun", "lockfile", "forensics"]
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "1"
+clap = { version = "4", features = ["derive"] }
+colored = "2"
+comfy-table = "7"
+binrw = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+camino = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

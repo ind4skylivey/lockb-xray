@@ -1,0 +1,18 @@
+[package]
+name = "bun-xray-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["ind4skylivey"]
+description = "Core parsing and security scanning logic for bun.lockb forensic analysis"
+license = "MIT"
+
+[dependencies]
+binrw = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+camino = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = "1"

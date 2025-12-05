@@ -1,0 +1,22 @@
+[package]
+name = "lockb-xray"
+version = "0.1.0"
+edition = "2021"
+authors = ["ind4skylivey"]
+description = "CLI tool to audit Bun bun.lockb for supply chain risks"
+license = "MIT"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+colored = { workspace = true }
+comfy-table = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+camino = { workspace = true }
+bun-xray-core = { path = "../bun-xray-core" }
+binrw = { workspace = true }
+
+[[bin]]
+name = "lockb-xray"
+path = "src/main.rs"
