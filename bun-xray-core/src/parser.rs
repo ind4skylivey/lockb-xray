@@ -1,4 +1,6 @@
-use crate::model::{BehaviorFlags, DependencyEntry, Lockfile, Package, ResolutionKind};
+use crate::model::{
+    BehaviorFlags, DependencyEntry, Lockfile, Package, ResolutionKind, TrailerInfo,
+};
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine};
 use binrw::{binrw, BinRead, BinReaderExt};
 use std::fs;
@@ -293,6 +295,10 @@ impl BufferKind {
 }
 
 pub fn parse_lockfile(path: &Path) -> Result<Lockfile, ParseError> {
+    parse_lockfile_with_warnings(path).map(|(lf, _)| lf)
+}
+
+pub fn parse_lockfile_with_warnings(path: &Path) -> Result<(Lockfile, Vec<String>), ParseError> {
     let bytes = fs::read(path)?;
     let mut cursor = Cursor::new(bytes.as_slice());
 
@@ -356,7 +362,8 @@ pub fn parse_lockfile(path: &Path) -> Result<Lockfile, ParseError> {
     }
 
     // Trailers: best-effort skip
-    parse_trailers(&mut tail_cursor, total_size)?;
+    let mut warnings = Vec::new();
+    let trailers = parse_trailers(&mut tail_cursor, total_size, &mut warnings)?;
 
     // Build packages
     let string_bytes = parsed_buffers.string_bytes.as_slice();
@@ -411,11 +418,15 @@ pub fn parse_lockfile(path: &Path) -> Result<Lockfile, ParseError> {
         });
     }
 
-    Ok(Lockfile {
-        format_version,
-        meta_hash,
-        packages,
-    })
+    Ok((
+        Lockfile {
+            format_version,
+            meta_hash,
+            packages,
+            trailers,
+        },
+        warnings,
+    ))
 }
 
 fn read_array<T>(cursor: &mut Cursor<&[u8]>, len: usize) -> Result<Vec<T>, ParseError>
@@ -591,7 +602,12 @@ fn gather_dependencies(
     Ok(out)
 }
 
-fn parse_trailers(cursor: &mut Cursor<&[u8]>, total_size: u64) -> Result<(), ParseError> {
+fn parse_trailers(
+    cursor: &mut Cursor<&[u8]>,
+    total_size: u64,
+    warnings: &mut Vec<String>,
+) -> Result<TrailerInfo, ParseError> {
+    let mut info = TrailerInfo::default();
     loop {
         let pos = cursor.position();
         if pos + 8 > total_size {
@@ -601,31 +617,44 @@ fn parse_trailers(cursor: &mut Cursor<&[u8]>, total_size: u64) -> Result<(), Par
         match tag {
             // known tags; skip their payloads using readArray semantics
             t if t == u64::from_le_bytes(*b"wOrKsPaC") => {
-                skip_array(cursor)?; // workspace name hashes
-                skip_array(cursor)?; // workspace versions
-                skip_array(cursor)?; // workspace path hashes
-                skip_array(cursor)?; // workspace path strings
+                let ws_names = read_array_bytes(cursor)?;
+                let ws_versions = read_array_bytes(cursor)?;
+                let ws_paths = read_array_bytes(cursor)?;
+                let ws_paths_strings = read_array_bytes(cursor)?;
+                info.workspaces_count = ws_names as usize;
+                warnings.push(format!(
+                    "workspace trailer: names={}, versions={}, paths={}, path_strings={}",
+                    ws_names, ws_versions, ws_paths, ws_paths_strings
+                ));
             }
             t if t == u64::from_le_bytes(*b"tRuStEDd") => {
-                skip_array(cursor)?; // trusted dependencies
+                let count = read_array_u32(cursor)?;
+                info.trusted_hashes = count;
             }
             t if t == u64::from_le_bytes(*b"eMpTrUsT") => {
-                // empty trusted deps; nothing more
+                info.has_empty_trusted = true;
             }
             t if t == u64::from_le_bytes(*b"oVeRriDs") => {
-                skip_array(cursor)?; // override name hashes
-                skip_array(cursor)?; // override deps
+                let names = read_array_bytes(cursor)?;
+                let deps = read_array_bytes(cursor)?;
+                info.overrides_count = deps as usize;
+                warnings.push(format!("overrides trailer: names={}, deps={}", names, deps));
             }
             t if t == u64::from_le_bytes(*b"pAtChEdD") => {
-                skip_array(cursor)?; // name+version hashes
-                skip_array(cursor)?; // patched deps
+                let names = read_array_bytes(cursor)?;
+                let patches = read_array_bytes(cursor)?;
+                info.patched_count = patches as usize;
+                warnings.push(format!("patched trailer: entries={} ({})", patches, names));
             }
             t if t == u64::from_le_bytes(*b"cAtAlOgS") => {
-                skip_array(cursor)?; // default names
-                skip_array(cursor)?; // default deps
-                skip_array(cursor)?; // catalog names
-                // inner catalog groups vary; best effort: stop parsing further
-                break;
+                let def_names = read_array_bytes(cursor)?;
+                let def_deps = read_array_bytes(cursor)?;
+                let catalogs = read_array_bytes(cursor)?;
+                info.catalogs_count = catalogs as usize;
+                warnings.push(format!(
+                    "catalogs trailer: default_names={}, default_deps={}, groups={}",
+                    def_names, def_deps, catalogs
+                ));
             }
             t if t == u64::from_le_bytes(*b"cNfGvRsN") => {
                 // config version u64
@@ -638,15 +667,38 @@ fn parse_trailers(cursor: &mut Cursor<&[u8]>, total_size: u64) -> Result<(), Par
             }
         }
     }
-    Ok(())
+    Ok(info)
 }
 
-fn skip_array(cursor: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
+fn read_array_range(cursor: &mut Cursor<&[u8]>) -> Result<(u64, u64), ParseError> {
     let start = cursor.read_le::<u64>()?;
     let end = cursor.read_le::<u64>()?;
     if end < start {
         return Err(ParseError::CorruptOffsets(start, end, 0));
     }
+    Ok((start, end))
+}
+
+fn read_array_bytes(cursor: &mut Cursor<&[u8]>) -> Result<u64, ParseError> {
+    let (start, end) = read_array_range(cursor)?;
     cursor.seek(SeekFrom::Start(end))?;
-    Ok(())
+    Ok((end - start) as u64)
+}
+
+fn read_array_u32(cursor: &mut Cursor<&[u8]>) -> Result<Vec<u32>, ParseError> {
+    let (start, end) = read_array_range(cursor)?;
+    if end == start {
+        return Ok(vec![]);
+    }
+    let len_bytes = (end - start) as usize;
+    cursor.seek(SeekFrom::Start(start))?;
+    let mut data = vec![0u8; len_bytes];
+    cursor.read_exact(&mut data)?;
+    cursor.seek(SeekFrom::Start(end))?;
+    let mut cur = Cursor::new(data.as_slice());
+    let mut out = Vec::new();
+    while (cur.position() as usize) < data.len() {
+        out.push(cur.read_le::<u32>()?);
+    }
+    Ok(out)
 }

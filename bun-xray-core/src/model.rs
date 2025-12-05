@@ -51,4 +51,15 @@ pub struct Lockfile {
     pub format_version: u32,
     pub meta_hash: [u8; 32],
     pub packages: Vec<Package>,
+    pub trailers: TrailerInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TrailerInfo {
+    pub trusted_hashes: Vec<u32>,
+    pub has_empty_trusted: bool,
+    pub overrides_count: usize,
+    pub patched_count: usize,
+    pub catalogs_count: usize,
+    pub workspaces_count: usize,
 }

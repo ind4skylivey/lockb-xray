@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use binrw::Error as BinrwError;
 use bun_xray_core::{
-    load_package_json, parse_lockfile, PackageJson, ParseError, ScanResult, SecurityScanner,
+    load_package_json, parse_lockfile_with_warnings, PackageJson, ParseError, ScanResult,
+    SecurityScanner,
 };
 use clap::{Parser, Subcommand};
 use colored::*;
@@ -24,6 +25,9 @@ enum Commands {
         /// Output JSON only
         #[arg(long)]
         json: bool,
+        /// Verbose parser diagnostics
+        #[arg(long)]
+        verbose: bool,
         /// Optional package.json path (defaults to sibling of lockfile)
         #[arg(long = "package-json", value_name = "PATH")]
         package_json: Option<PathBuf>,
@@ -36,18 +40,56 @@ fn main() -> Result<()> {
         Commands::Audit {
             path,
             json,
+            verbose,
             package_json,
-        } => run_audit(path, json, package_json)?,
+        } => run_audit(path, json, verbose, package_json)?,
     }
     Ok(())
 }
 
-fn run_audit(path: PathBuf, json: bool, package_json: Option<PathBuf>) -> Result<()> {
+fn run_audit(path: PathBuf, json: bool, verbose: bool, package_json: Option<PathBuf>) -> Result<()> {
     let lockfile_path = path.clone();
-    let lockfile = parse_lockfile(lockfile_path.as_path()).map_err(map_binrw_error)?;
+    let (lockfile, warnings) =
+        parse_lockfile_with_warnings(lockfile_path.as_path()).map_err(map_binrw_error)?;
 
     let package_json = resolve_package_json(&lockfile_path, package_json)?;
     let scan = lockfile.scan(package_json.as_ref());
+
+    if verbose {
+        for w in warnings {
+            eprintln!("[warn] {}", w);
+        }
+        if lockfile.trailers.has_empty_trusted {
+            eprintln!("[info] trustedDependencies present but empty");
+        }
+        if !lockfile.trailers.trusted_hashes.is_empty() {
+            eprintln!(
+                "[info] trustedDependencies count={}",
+                lockfile.trailers.trusted_hashes.len()
+            );
+        }
+        if lockfile.trailers.overrides_count > 0 {
+            eprintln!(
+                "[info] overrides entries={}",
+                lockfile.trailers.overrides_count
+            );
+        }
+        if lockfile.trailers.patched_count > 0 {
+            eprintln!(
+                "[info] patched dependencies={}",
+                lockfile.trailers.patched_count
+            );
+        }
+        if lockfile.trailers.catalogs_count > 0 {
+            eprintln!("[info] catalogs groups={}", lockfile.trailers.catalogs_count);
+        }
+        if lockfile.trailers.workspaces_count > 0 {
+            eprintln!(
+                "[info] workspace packages={}",
+                lockfile.trailers.workspaces_count
+            );
+        }
+    }
 
     if json {
         let output = serde_json::to_string_pretty(&scan)?;
